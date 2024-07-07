@@ -61,7 +61,7 @@ def main():
             viz_type = st.selectbox("Choose a visualization", [
                 "Machine Features",
                 "Correlation Heatmap",
-                "Polar Plot",
+                "Animated Polar Plot",
                 "3D Scatter Plot",
                 "Animated Bubble Chart",
                 "Density Heatmap",
@@ -72,8 +72,8 @@ def main():
                 visualize_machine_features(df)
             elif viz_type == "Correlation Heatmap":
                 create_correlation_heatmap(df)
-            elif viz_type == "Polar Plot":
-                create_polar_plot(df)
+            elif viz_type == "Animated Polar Plot":
+                create_animated_polar_plot(df)
             elif viz_type == "3D Scatter Plot":
                 create_3d_scatter_plot(df)
             elif viz_type == "Animated Bubble Chart":
@@ -119,26 +119,137 @@ def create_correlation_heatmap(df):
     plt.title('Correlation Heatmap of Selected Parameters')
     st.pyplot(fig)
 
-def create_polar_plot(df):
+def create_animated_polar_plot(df):
     pressure_column = 'Arbeitsdruck'
-    time_normalized = np.linspace(0, 360, len(df))
-    df[pressure_column] = pd.to_numeric(df[pressure_column], errors='coerce')
+    rpm_column = 'Drehzahl'
+    chainage_column = 'Chainage'
 
-    fig = go.Figure()
-    fig.add_trace(go.Scatterpolar(
-        r=df[pressure_column],
-        theta=time_normalized,
-        mode='markers',
-        marker=dict(color='blue', size=5),
-        name='Pressure'
-    ))
+    # Convert to numeric and handle errors
+    for col in [pressure_column, rpm_column, chainage_column]:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
 
+    # Remove problematic rows
+    df = df.dropna(subset=[pressure_column, rpm_column, chainage_column])
+
+    if df.empty:
+        st.write("No valid data points remaining after removing NaN values.")
+        return
+
+    # Create frames for each unique chainage
+    frames = []
+    for chainage in df[chainage_column].unique():
+        chainage_data = df[df[chainage_column] == chainage]
+
+        # Normalize time to 0-360 range for each chainage
+        time_normalized = np.linspace(0, 360, len(chainage_data))
+
+        # Calculate point density for pressure and RPM
+        xy_pressure = np.vstack([time_normalized, chainage_data[pressure_column]])
+        z_pressure = gaussian_kde(xy_pressure)(xy_pressure)
+
+        xy_rpm = np.vstack([time_normalized, chainage_data[rpm_column]])
+        z_rpm = gaussian_kde(xy_rpm)(xy_rpm)
+
+        frame = go.Frame(
+            data=[
+                go.Scatterpolar(
+                    r=chainage_data[pressure_column],
+                    theta=time_normalized,
+                    mode='markers',
+                    marker=dict(
+                        size=5,
+                        color=z_pressure,
+                        colorscale='Viridis',
+                        showscale=True,
+                        colorbar=dict(
+                            title='Pressure Density',
+                            titleside='right',
+                            x=1.1
+                        )
+                    ),
+                    name='Pressure'
+                ),
+                go.Scatterpolar(
+                    r=chainage_data[rpm_column],
+                    theta=time_normalized,
+                    mode='markers',
+                    marker=dict(
+                        size=5,
+                        color=z_rpm,
+                        colorscale='Plasma',
+                        showscale=True,
+                        colorbar=dict(
+                            title='RPM Density',
+                            titleside='right',
+                            x=1.2
+                        )
+                    ),
+                    name='RPM'
+                )
+            ],
+            name=str(chainage)
+        )
+        frames.append(frame)
+
+    # Create initial frame data
+    initial_chainage = df[chainage_column].min()
+    initial_data = df[df[chainage_column] == initial_chainage]
+    initial_time = np.linspace(0, 360, len(initial_data))
+
+    initial_xy_pressure = np.vstack([initial_time, initial_data[pressure_column]])
+    initial_z_pressure = gaussian_kde(initial_xy_pressure)(initial_xy_pressure)
+
+    initial_xy_rpm = np.vstack([initial_time, initial_data[rpm_column]])
+    initial_z_rpm = gaussian_kde(initial_xy_rpm)(initial_xy_rpm)
+
+    # Create the figure with frames
+    fig = go.Figure(
+        data=[
+            go.Scatterpolar(
+                r=initial_data[pressure_column],
+                theta=initial_time,
+                mode='markers',
+                marker=dict(
+                    size=5,
+                    color=initial_z_pressure,
+                    colorscale='Viridis',
+                    showscale=True,
+                    colorbar=dict(
+                        title='Pressure Density',
+                        titleside='right',
+                        x=1.1
+                    )
+                ),
+                name='Pressure'
+            ),
+            go.Scatterpolar(
+                r=initial_data[rpm_column],
+                theta=initial_time,
+                mode='markers',
+                marker=dict(
+                    size=5,
+                    color=initial_z_rpm,
+                    colorscale='Plasma',
+                    showscale=True,
+                    colorbar=dict(
+                        title='RPM Density',
+                        titleside='right',
+                        x=1.2
+                    )
+                ),
+                name='RPM'
+            )
+        ],
+        frames=frames
+    )
+
+    # Update layout
     fig.update_layout(
-        title='Pressure Distribution Over Time',
+        title='Animated Polar Plot: Pressure and RPM Distribution Over Chainage',
         polar=dict(
             radialaxis=dict(
                 visible=True,
-                range=[0, df[pressure_column].max() * 1.1],
+                range=[0, max(df[pressure_column].max(), df[rpm_column].max()) * 1.1],
                 showline=False,
                 showgrid=True,
                 gridcolor='lightgrey',
@@ -153,9 +264,35 @@ def create_polar_plot(df):
                 gridcolor='lightgrey'
             )
         ),
-        showlegend=False,
-        template='plotly_white'
+        showlegend=True,
+        legend=dict(x=0.5, y=-0.1, orientation='h'),
+        updatemenus=[dict(
+            type='buttons',
+            showactive=False,
+            buttons=[dict(label='Play',
+                          method='animate',
+                          args=[None, dict(frame=dict(duration=100, redraw=True), fromcurrent=True)]),
+                     dict(label='Pause',
+                          method='animate',
+                          args=[[None], dict(frame=dict(duration=0, redraw=True), mode='immediate')])]
+        )],
+        sliders=[dict(
+            steps=[
+                dict(
+                    method='animate',
+                    args=[[str(chainage)], dict(mode='immediate', frame=dict(duration=100, redraw=True))],
+                    label=str(chainage)
+                )
+                for chainage in df[chainage_column].unique()
+            ],
+            active=0,
+            currentvalue=dict(prefix='Chainage: ', visible=True),
+            pad=dict(t=50)
+        )],
+        height=800,
+        margin=dict(r=100, t=100, b=100, l=100)
     )
+
     st.plotly_chart(fig)
 
 def create_3d_scatter_plot(df):
@@ -171,6 +308,61 @@ def create_3d_scatter_plot(df):
     fig.update_layout(scene=dict(xaxis_title='Working Pressure',
                                  yaxis_title='Penetration Rate',
                                  zaxis_title='Calculated Torque'))
+    st.plotly_chart(fig)
+
+def create_animated_bubble_chart(df):
+    fig = px.scatter(df, x='Arbeitsdruck', y='Penetration_Rate',
+                     animation_frame='Chainage', animation_group='Position_Grad',
+                     size='Thrust_Force', color='Calculated_Torque', hover_name='Drehzahl',
+                     log_x=True, size_max=55, range_x=[df['Arbeitsdruck'].min(), df['Arbeitsdruck'].max()],
+                     range_y=[df['Penetration_Rate'].min(), df['Penetration_Rate'].max()],
+                     title='Animated Bubble Chart: Parameter Evolution Along Chainage')
+    st.plotly_chart(fig)
+
+def create_density_heatmap(df):
+    x = df['Arbeitsdruck']
+    y = df['Penetration_Rate']
+
+    xy = np.vstack([x, y])
+    z = gaussian_kde(xy)(xy)
+
+    fig = go.Figure(data=go.Scatter(
+        x=x, y=y, mode='markers',
+        marker=dict(size=3, color=z, colorscale='Viridis', showscale=True)
+    ))
+
+    fig.update_layout(
+        title='Density Heatmap: Working Pressure vs Penetration Rate',
+        xaxis_title='Working Pressure',
+        yaxis_title='Penetration Rate',
+        coloraxis_colorbar=dict(title='Density')
+    )
+    st.plotly_chart(fig)
+
+def create_3d_surface_plot(df):
+    x = df['Arbeitsdruck']
+    y = df['Penetration_Rate']
+    z = df['Calculated_Torque']
+
+    xi = np.linspace(x.min(), x.max(), 100)
+    yi = np.linspace(y.min(), y.max(), 100)
+    xi, yi = np.meshgrid(xi, yi)
+
+    zi = griddata((x, y), z, (xi, yi), method='linear')
+
+    fig = go.Figure(data=[go.Surface(x=xi, y=yi, z=zi)])
+    fig.update_layout(
+        title='3D Surface Plot: Working Pressure, Penetration Rate, and Calculated Torque',
+        scene=dict(
+            xaxis_title='Working Pressure',
+            yaxis_title='Penetration Rate',
+            zaxis_title='Calculated Torque'
+        ),
+        autosize=False,
+        width=800,
+        height=800,
+        margin=dict(l=65, r=50, b=65, t=90)
+    )
     st.plotly_chart(fig)
 
 def create_animated_bubble_chart(df):
@@ -251,3 +443,15 @@ def create_statistical_summary(df):
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
+
+
+
+
+
+
+
